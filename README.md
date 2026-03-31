@@ -57,6 +57,31 @@ Claude Code is Anthropic's AI-powered coding assistant that runs as:
 
 It allows developers to interact with Claude directly in their development environment — Claude can read files, write code, run shell commands, search codebases, and perform complex multi-step software engineering tasks autonomously.
 
+## Can This Be Switched to OpenAI Models?
+
+**Short answer:** not with a simple config flip. The leaked codebase is deeply coupled to Anthropic's SDKs, model catalog, and request/streaming formats, so replacing Claude with an OpenAI model would require a fairly invasive port rather than a small patch.
+
+### Why it is Anthropic-specific today
+
+- **Provider selection only covers Anthropic variants**: `utils/model/providers.ts` limits `APIProvider` to `firstParty`, `bedrock`, `vertex`, and `foundry`.
+- **The model catalog is Claude-only**: `utils/model/configs.ts`, `utils/model/model.ts`, and `utils/model/modelStrings.ts` are built around Claude model IDs such as Sonnet, Opus, and Haiku.
+- **The core API stack depends directly on Anthropic SDK types**: `services/api/client.ts` constructs Anthropic/Bedrock/Vertex/Foundry clients, while `services/api/claude.ts` imports Anthropic beta message/content/tool stream types throughout the request pipeline.
+- **System prompts and branding assume Claude**: `constants/system.ts` hardcodes strings like `You are Claude Code, Anthropic's official CLI for Claude.`
+
+### What would be required to support OpenAI
+
+At a minimum, an OpenAI port would need:
+
+1. a new provider type and authentication path for OpenAI keys/endpoints
+2. a separate model catalog for GPT models
+3. request/response translation between Anthropic-style tool/message blocks and OpenAI chat/responses APIs
+4. streaming/event handling updates in the main query engine
+5. prompt/branding cleanup for non-Claude providers
+
+### Practical conclusion
+
+If the question is whether this codebase can be repointed to OpenAI **as-is**, the answer is **no**. If the question is whether it is technically possible with engineering work, the answer is **yes**, but it would be a significant compatibility project touching the provider layer, model selection, auth flow, and the core API/streaming logic.
+
 ## Repository Stats
 
 - **~1,900 TypeScript files**
