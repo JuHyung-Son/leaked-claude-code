@@ -520,6 +520,7 @@ async function* streamAsAnthropicEvents({
   const messageId = randomUUID()
   const textBlocks = new Map<string, TextBlockState>()
   const toolBlocks = new Map<string, ToolBlockState>()
+  const toolKeyAliases = new Map<string, string>()
   let nextIndex = 0
   let usage: OpenAIUsage | undefined
   let resolvedModel = model
@@ -580,6 +581,35 @@ async function* streamAsAnthropicEvents({
     }
     toolBlocks.set(key, state)
     return state
+  }
+
+  const getCanonicalToolKey = ({
+    itemKey,
+    item,
+    outputIndex,
+  }: {
+    itemKey?: string
+    item?: OpenAIResponseOutputItem
+    outputIndex?: number
+  }) => {
+    const resolvedItemKey =
+      (itemKey ? toolKeyAliases.get(itemKey) : undefined) || itemKey
+    const canonicalKey =
+      item?.call_id || item?.id || resolvedItemKey || String(outputIndex ?? 0)
+
+    for (const alias of [itemKey, item?.id, item?.call_id]) {
+      if (!alias || alias === canonicalKey) {
+        continue
+      }
+      toolKeyAliases.set(alias, canonicalKey)
+      const aliasedState = toolBlocks.get(alias)
+      if (aliasedState && !toolBlocks.has(canonicalKey)) {
+        toolBlocks.set(canonicalKey, aliasedState)
+        toolBlocks.delete(alias)
+      }
+    }
+
+    return canonicalKey
   }
 
   const startTextBlock = async function* (state: TextBlockState) {
@@ -693,7 +723,11 @@ async function* streamAsAnthropicEvents({
     }
 
     if (event.type === 'response.function_call_arguments.delta') {
-      const key = `tool:${event.item_id || event.output_index || 0}`
+      const key = getCanonicalToolKey({
+        itemKey: event.item_id,
+        item: event.item,
+        outputIndex: event.output_index,
+      })
       const state = ensureToolBlock(key, event.item)
       yield* emitToolArgs(state, event.delta)
       finishReason = 'tool_use'
@@ -701,7 +735,11 @@ async function* streamAsAnthropicEvents({
     }
 
     if (event.type === 'response.function_call_arguments.done') {
-      const key = `tool:${event.item_id || event.output_index || 0}`
+      const key = getCanonicalToolKey({
+        itemKey: event.item_id,
+        item: event.item,
+        outputIndex: event.output_index,
+      })
       const state = ensureToolBlock(key, event.item)
       yield* emitMissingArgs(state, event.arguments ?? event.item?.arguments)
       finishReason = 'tool_use'
@@ -713,7 +751,11 @@ async function* streamAsAnthropicEvents({
         event.type === 'response.output_item.done') &&
       event.item?.type === 'function_call'
     ) {
-      const key = `tool:${event.item_id || event.item.id || event.output_index || 0}`
+      const key = getCanonicalToolKey({
+        itemKey: event.item_id,
+        item: event.item,
+        outputIndex: event.output_index,
+      })
       const state = ensureToolBlock(key, event.item)
       yield* startToolBlock(state)
       if (event.type === 'response.output_item.done') {
@@ -737,7 +779,11 @@ async function* streamAsAnthropicEvents({
 
     for (const [outputIndex, item] of (completedResponse.output || []).entries()) {
       if (item.type === 'function_call') {
-        const key = `tool:${item.id || item.call_id || outputIndex}`
+        const key = getCanonicalToolKey({
+          itemKey: item.id,
+          item,
+          outputIndex,
+        })
         const state = ensureToolBlock(key, item)
         yield* emitMissingArgs(state, item.arguments)
         continue
