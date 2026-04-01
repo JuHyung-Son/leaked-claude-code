@@ -59,28 +59,31 @@ It allows developers to interact with Claude directly in their development envir
 
 ## Can This Be Switched to OpenAI Models?
 
-**Short answer:** not with a simple config flip. The leaked codebase is deeply coupled to Anthropic's SDKs, model catalog, and request/streaming formats, so replacing Claude with an OpenAI model would require a fairly invasive port rather than a small patch.
+**Short answer:** now **yes, experimentally**. The codebase is still largely Anthropic-shaped, but it can now be routed through OpenAI's Chat Completions API by enabling the OpenAI provider flag.
 
-### Why it is Anthropic-specific today
+### How to enable it
 
-- **Provider selection only covers Anthropic variants**: `utils/model/providers.ts` limits `APIProvider` to `firstParty`, `bedrock`, `vertex`, and `foundry`.
-- **The model catalog is Claude-only**: `utils/model/configs.ts`, `utils/model/model.ts`, and `utils/model/modelStrings.ts` are built around Claude model IDs such as Sonnet, Opus, and Haiku.
-- **The core API stack depends directly on Anthropic SDK types**: `services/api/client.ts` constructs Anthropic/Bedrock/Vertex/Foundry clients, while `services/api/claude.ts` imports Anthropic beta message/content/tool stream types throughout the request pipeline.
-- **System prompts and branding assume Claude**: `constants/system.ts` hardcodes strings like `You are Claude Code, Anthropic's official CLI for Claude.`
+Set these environment variables before launching the app:
 
-### What would be required to support OpenAI
+```bash
+export CLAUDE_CODE_USE_OPENAI=1
+export OPENAI_API_KEY=your_api_key_here
+export OPENAI_MODEL=gpt-4.1 # optional, defaults to gpt-4.1
+```
 
-At a minimum, an OpenAI port would need:
+### What changed
 
-1. a new provider type and authentication path for OpenAI keys/endpoints
-2. a separate model catalog for GPT models
-3. request/response translation between Anthropic-style tool/message blocks and OpenAI chat/responses APIs
-4. streaming/event handling updates in the main query engine
-5. prompt/branding cleanup for non-Claude providers
+- **Provider selection now includes OpenAI**: `utils/model/providers.ts` recognizes `CLAUDE_CODE_USE_OPENAI=1`.
+- **Model defaults can resolve to OpenAI models**: `utils/model/model.ts`, `utils/model/configs.ts`, and `utils/model/modelOptions.ts` now expose OpenAI-backed defaults such as `gpt-4.1` and `gpt-4.1-mini`.
+- **The API client can adapt OpenAI responses into Anthropic-style events**: `services/api/client.ts` uses `services/api/openaiAdapter.ts` to translate OpenAI chat completions into the event/message shape the rest of the app already expects.
 
-### Practical conclusion
+### Current limitations
 
-If the question is whether this codebase can be repointed to OpenAI **as-is**, the answer is **no**. If the question is whether it is technically possible with engineering work, the answer is **yes**, but it would be a significant compatibility project touching the provider layer, model selection, auth flow, and the core API/streaming logic.
+This is still a compatibility layer, so some Claude-specific behaviors remain imperfect:
+
+1. Claude-branded prompts and labels still exist in parts of the UI
+2. advanced Anthropic-only beta features do not have OpenAI parity
+3. the adapter currently targets the OpenAI Chat Completions API, not every OpenAI API surface
 
 ## Repository Stats
 

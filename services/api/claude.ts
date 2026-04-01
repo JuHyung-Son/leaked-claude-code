@@ -22,6 +22,7 @@ import type { Stream } from '@anthropic-ai/sdk/streaming.mjs'
 import { randomUUID } from 'crypto'
 import {
   getAPIProvider,
+  isOpenAIProvider,
   isFirstPartyAnthropicBaseUrl,
 } from 'src/utils/model/providers.js'
 import {
@@ -578,6 +579,13 @@ export async function verifyApiKey(
       error.message.includes(
         '{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
       )
+    ) {
+      return false
+    }
+    if (
+      isOpenAIProvider() &&
+      error instanceof Error &&
+      /incorrect api key provided|invalid api key|401/i.test(error.message)
     ) {
       return false
     }
