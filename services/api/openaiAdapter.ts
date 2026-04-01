@@ -31,49 +31,48 @@ type OpenAIRequestOptions = {
 }
 
 type OpenAIUsage = {
+  input_tokens?: number
+  output_tokens?: number
   prompt_tokens?: number
   completion_tokens?: number
 }
 
-type OpenAIChatCompletion = {
-  id?: string
-  model?: string
-  usage?: OpenAIUsage
-  choices?: Array<{
-    finish_reason?: string | null
-    message?: {
-      content?: string | null
-      tool_calls?: Array<{
-        id?: string
-        type?: 'function'
-        function?: {
-          name?: string
-          arguments?: string
-        }
-      }>
-    }
-  }>
+type OpenAIResponseOutputText = {
+  type?: string
+  text?: string
 }
 
-type OpenAIChatCompletionChunk = {
+type OpenAIResponseOutputItem = {
+  id?: string
+  type?: string
+  role?: string
+  content?: Array<OpenAIResponseOutputText>
+  call_id?: string
+  name?: string
+  arguments?: string
+  status?: string
+}
+
+type OpenAIResponse = {
   id?: string
   model?: string
   usage?: OpenAIUsage
-  choices?: Array<{
-    index?: number
-    finish_reason?: string | null
-    delta?: {
-      content?: string | null
-      tool_calls?: Array<{
-        index?: number
-        id?: string
-        function?: {
-          name?: string
-          arguments?: string
-        }
-      }>
-    }
-  }>
+  output?: Array<OpenAIResponseOutputItem>
+  status?: string
+  incomplete_details?: {
+    reason?: string
+  }
+}
+
+type OpenAIResponseEvent = {
+  type?: string
+  response?: OpenAIResponse
+  item?: OpenAIResponseOutputItem
+  output_index?: number
+  item_id?: string
+  content_index?: number
+  delta?: string
+  part?: OpenAIResponseOutputText
 }
 
 type OpenAIResponseWithData<T> = {
@@ -137,10 +136,9 @@ export function createOpenAIAnthropicAdapter(options: OpenAIClientOptions) {
     )
   }
 
-  const baseURL = (options.baseURL || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(
-    /\/$/,
-    '',
-  )
+  const baseURL = (
+    options.baseURL || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'
+  ).replace(/\/$/, '')
 
   return {
     beta: {
@@ -149,7 +147,7 @@ export function createOpenAIAnthropicAdapter(options: OpenAIClientOptions) {
           const executeWithResponse = async (): Promise<
             OpenAIResponseWithData<unknown>
           > => {
-            const response = await postChatCompletions({
+            const response = await postResponses({
               apiKey,
               baseURL,
               params,
@@ -174,7 +172,7 @@ export function createOpenAIAnthropicAdapter(options: OpenAIClientOptions) {
               }
             }
 
-            const json = (await response.response.json()) as OpenAIChatCompletion
+            const json = (await response.response.json()) as OpenAIResponse
             return {
               data: toAnthropicMessage(json, params.model),
               request_id: response.requestId,
@@ -197,7 +195,7 @@ export function createOpenAIAnthropicAdapter(options: OpenAIClientOptions) {
   }
 }
 
-async function postChatCompletions({
+async function postResponses({
   apiKey,
   baseURL,
   params,
@@ -228,7 +226,7 @@ async function postChatCompletions({
     ...requestOptions?.headers,
   }
 
-  const response = await fetchImpl(`${baseURL}/chat/completions`, {
+  const response = await fetchImpl(`${baseURL}/responses`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
@@ -241,16 +239,23 @@ async function postChatCompletions({
     let message = `${response.status} ${response.statusText}`
     try {
       errorBody = await response.json()
-      const apiMessage =
-        typeof errorBody === 'object' &&
-        errorBody !== null &&
-        'error' in errorBody &&
-        typeof errorBody.error === 'object' &&
-        errorBody.error !== null &&
-        'message' in errorBody.error &&
-        typeof errorBody.error.message === 'string'
-          ? errorBody.error.message
-          : undefined
+      let apiMessage: string | undefined
+      if (typeof errorBody === 'object' && errorBody !== null) {
+        if (
+          'error' in errorBody &&
+          typeof errorBody.error === 'object' &&
+          errorBody.error !== null &&
+          'message' in errorBody.error &&
+          typeof errorBody.error.message === 'string'
+        ) {
+          apiMessage = errorBody.error.message
+        } else if (
+          'message' in errorBody &&
+          typeof errorBody.message === 'string'
+        ) {
+          apiMessage = errorBody.message
+        }
+      }
       if (apiMessage) {
         message = apiMessage
       }
@@ -267,37 +272,35 @@ function buildOpenAIRequestBody(params: OpenAICreateParams): Record<string, unkn
   const tools = (params.tools || [])
     .map(tool => toOpenAITool(tool))
     .filter(Boolean)
+  const instructions = (params.system || [])
+    .map(block => block?.text ?? '')
+    .filter(Boolean)
+    .join('\n\n')
+
   return {
     model: params.model,
-    messages: toOpenAIMessages(params.messages, params.system),
+    ...(instructions ? { instructions } : {}),
+    input: toOpenAIResponseInput(params.messages),
     ...(tools.length > 0
       ? {
           tools,
           tool_choice: toOpenAIToolChoice(params.tool_choice),
         }
       : {}),
-    ...(params.max_tokens !== undefined ? { max_tokens: params.max_tokens } : {}),
+    ...(params.max_tokens !== undefined
+      ? { max_output_tokens: params.max_tokens }
+      : {}),
     ...(params.temperature !== undefined
       ? { temperature: params.temperature }
       : {}),
-    ...(params.stream
-      ? { stream: true, stream_options: { include_usage: true } }
-      : {}),
+    ...(params.stream ? { stream: true } : {}),
   }
 }
 
-function toOpenAIMessages(
+function toOpenAIResponseInput(
   messages: OpenAICreateParams['messages'],
-  systemBlocks: OpenAICreateParams['system'],
 ): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = []
-  const systemText = (systemBlocks || [])
-    .map(block => block?.text ?? '')
-    .filter(Boolean)
-    .join('\n\n')
-  if (systemText) {
-    out.push({ role: 'system', content: systemText })
-  }
 
   for (const message of messages) {
     if (message.role === 'user') {
@@ -305,20 +308,33 @@ function toOpenAIMessages(
       continue
     }
     if (message.role === 'assistant') {
-      out.push(convertAssistantMessage(message.content))
+      out.push(...convertAssistantMessage(message.content))
       continue
     }
   }
+
   return out
+}
+
+function createResponseTextMessage(role: 'user' | 'assistant', text: string) {
+  return {
+    role,
+    content: [
+      {
+        type: 'input_text',
+        text,
+      },
+    ],
+  }
 }
 
 function convertUserMessage(content: unknown): Array<Record<string, unknown>> {
   if (typeof content === 'string') {
-    return [{ role: 'user', content }]
+    return [createResponseTextMessage('user', content)]
   }
 
   if (!Array.isArray(content)) {
-    return [{ role: 'user', content: stringifyUnknown(content) }]
+    return [createResponseTextMessage('user', stringifyUnknown(content))]
   }
 
   const out: Array<Record<string, unknown>> = []
@@ -327,7 +343,7 @@ function convertUserMessage(content: unknown): Array<Record<string, unknown>> {
   const flushPendingText = () => {
     const text = pendingText.join('\n').trim()
     if (text) {
-      out.push({ role: 'user', content: text })
+      out.push(createResponseTextMessage('user', text))
     }
     pendingText = []
   }
@@ -339,12 +355,12 @@ function convertUserMessage(content: unknown): Array<Record<string, unknown>> {
     if ('type' in block && block.type === 'tool_result') {
       flushPendingText()
       out.push({
-        role: 'tool',
-        tool_call_id:
+        type: 'function_call_output',
+        call_id:
           'tool_use_id' in block && typeof block.tool_use_id === 'string'
             ? block.tool_use_id
             : randomUUID(),
-        content: extractToolResultContent(block),
+        output: extractToolResultContent(block),
       })
       continue
     }
@@ -356,54 +372,61 @@ function convertUserMessage(content: unknown): Array<Record<string, unknown>> {
 
   flushPendingText()
   if (out.length === 0) {
-    out.push({ role: 'user', content: '' })
+    out.push(createResponseTextMessage('user', ''))
   }
   return out
 }
 
-function convertAssistantMessage(content: unknown): Record<string, unknown> {
+function convertAssistantMessage(content: unknown): Array<Record<string, unknown>> {
   if (typeof content === 'string') {
-    return { role: 'assistant', content }
+    return [createResponseTextMessage('assistant', content)]
   }
 
   if (!Array.isArray(content)) {
-    return { role: 'assistant', content: stringifyUnknown(content) }
+    return [createResponseTextMessage('assistant', stringifyUnknown(content))]
   }
 
-  const textParts: string[] = []
-  const toolCalls: Array<Record<string, unknown>> = []
+  const out: Array<Record<string, unknown>> = []
+  let pendingText: string[] = []
+
+  const flushPendingText = () => {
+    const text = pendingText.join('\n').trim()
+    if (text) {
+      out.push(createResponseTextMessage('assistant', text))
+    }
+    pendingText = []
+  }
 
   for (const block of content) {
     if (!block || typeof block !== 'object' || !('type' in block)) {
       continue
     }
     if (block.type === 'tool_use') {
-      toolCalls.push({
-        id: 'id' in block && typeof block.id === 'string' ? block.id : randomUUID(),
-        type: 'function',
-        function: {
-          name:
-            'name' in block && typeof block.name === 'string'
-              ? block.name
-              : 'tool',
-          arguments: JSON.stringify(
-            'input' in block ? normalizeToolInput(block.input) : {},
-          ),
-        },
+      flushPendingText()
+      out.push({
+        type: 'function_call',
+        call_id: 'id' in block && typeof block.id === 'string' ? block.id : randomUUID(),
+        name:
+          'name' in block && typeof block.name === 'string'
+            ? block.name
+            : 'tool',
+        arguments: JSON.stringify(
+          'input' in block ? normalizeToolInput(block.input) : {},
+        ),
       })
       continue
     }
     const text = extractTextFromBlock(block)
     if (text) {
-      textParts.push(text)
+      pendingText.push(text)
     }
   }
 
-  return {
-    role: 'assistant',
-    content: textParts.join('\n').trim(),
-    ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+  flushPendingText()
+  if (out.length === 0) {
+    out.push(createResponseTextMessage('assistant', ''))
   }
+  return out
 }
 
 function toOpenAITool(tool: {
@@ -416,13 +439,11 @@ function toOpenAITool(tool: {
   }
   return {
     type: 'function',
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.input_schema || {
-        type: 'object',
-        properties: {},
-      },
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.input_schema || {
+      type: 'object',
+      properties: {},
     },
   }
 }
@@ -437,7 +458,7 @@ function toOpenAIToolChoice(toolChoice: OpenAICreateParams['tool_choice']) {
   if (toolChoice.type === 'tool' && toolChoice.name) {
     return {
       type: 'function',
-      function: { name: toolChoice.name },
+      name: toolChoice.name,
     }
   }
   if (toolChoice.type === 'any') {
@@ -479,28 +500,32 @@ async function* streamAsAnthropicEvents({
   model: string
 }): AsyncGenerator<unknown> {
   const messageId = randomUUID()
-  const contentBlocks = new Map<
-    number,
-    { type: 'text' | 'tool_use'; index: number; id?: string; name?: string }
-  >()
+  const textBlocks = new Map<string, number>()
+  const toolBlocks = new Map<string, { index: number; id: string; name: string }>()
+  const startedTextBlocks = new Set<string>()
+  const startedToolBlocks = new Set<string>()
   let nextIndex = 0
-  let textIndex: number | undefined
-  let finishReason: string | null = null
   let usage: OpenAIUsage | undefined
+  let resolvedModel = model
+  let finishReason: 'tool_use' | 'max_tokens' | 'end_turn' = 'end_turn'
+  let completedResponse: OpenAIResponse | undefined
   let started = false
 
-  const ensureStarted = (chunk?: OpenAIChatCompletionChunk) => {
+  const ensureStarted = (currentResponse?: OpenAIResponse) => {
     if (started) {
-      return
+      return null
     }
     started = true
+    if (currentResponse?.model) {
+      resolvedModel = currentResponse.model
+    }
     return {
       type: 'message_start',
       message: {
-        id: chunk?.id || messageId,
+        id: currentResponse?.id || messageId,
         type: 'message',
         role: 'assistant',
-        model: chunk?.model || model,
+        model: currentResponse?.model || resolvedModel,
         content: [],
         stop_reason: null,
         stop_sequence: null,
@@ -511,64 +536,186 @@ async function* streamAsAnthropicEvents({
     }
   }
 
-  for await (const chunk of parseSSE<OpenAIChatCompletionChunk>(response)) {
-    const startEvent = ensureStarted(chunk)
+  const ensureTextBlock = (key: string) => {
+    const existing = textBlocks.get(key)
+    if (existing !== undefined) {
+      return existing
+    }
+    const index = nextIndex++
+    textBlocks.set(key, index)
+    return index
+  }
+
+  const ensureToolBlock = (key: string, item?: OpenAIResponseOutputItem) => {
+    const existing = toolBlocks.get(key)
+    if (existing) {
+      return existing
+    }
+    const state = {
+      index: nextIndex++,
+      id: item?.call_id || item?.id || randomUUID(),
+      name: item?.name || 'tool',
+    }
+    toolBlocks.set(key, state)
+    return state
+  }
+
+  for await (const event of parseSSE<OpenAIResponseEvent>(response)) {
+    const startEvent = ensureStarted(event.response)
     if (startEvent) {
       yield startEvent
     }
 
-    if (chunk.usage) {
-      usage = chunk.usage
+    if (event.response) {
+      completedResponse = event.response
+      if (event.response.model) {
+        resolvedModel = event.response.model
+      }
+      if (event.response.usage) {
+        usage = event.response.usage
+      }
+      finishReason = getResponseStopReason(event.response)
     }
 
-    for (const choice of chunk.choices || []) {
-      if (choice.finish_reason) {
-        finishReason = choice.finish_reason
-      }
-
-      const delta = choice.delta
-      if (!delta) {
-        continue
-      }
-
-      if (delta.content) {
-        if (textIndex === undefined) {
-          textIndex = nextIndex++
-          contentBlocks.set(textIndex, { type: 'text', index: textIndex })
+    if (event.type === 'response.output_text.delta') {
+      const key = `text:${event.item_id || event.output_index || 0}:${event.content_index || 0}`
+      const index = ensureTextBlock(key)
+      if (textBlocks.get(key) === index && event.delta !== undefined) {
+        if (event.delta.length > 0) {
+          if (event.delta && textBlocks.get(key) === index && !startedTextBlocks.has(key)) {
+            yield {
+              type: 'content_block_start',
+              index,
+              content_block: {
+                type: 'text',
+                text: '',
+              },
+            }
+            startedTextBlocks.add(key)
+          }
           yield {
-            type: 'content_block_start',
-            index: textIndex,
-            content_block: {
-              type: 'text',
-              text: '',
+            type: 'content_block_delta',
+            index,
+            delta: {
+              type: 'text_delta',
+              text: event.delta,
             },
           }
         }
+      }
+      continue
+    }
+
+    if (event.type === 'response.content_part.added' && isTextResponsePart(event.part)) {
+      const key = `text:${event.item_id || event.output_index || 0}:${event.content_index || 0}`
+      const index = ensureTextBlock(key)
+      if (!startedTextBlocks.has(key)) {
+        yield {
+          type: 'content_block_start',
+          index,
+          content_block: {
+            type: 'text',
+            text: '',
+          },
+        }
+        startedTextBlocks.add(key)
+      }
+      if (event.part?.text) {
         yield {
           type: 'content_block_delta',
-          index: textIndex,
+          index,
           delta: {
             type: 'text_delta',
-            text: delta.content,
+            text: event.part.text,
           },
         }
       }
+      continue
+    }
 
-      for (const toolCall of delta.tool_calls || []) {
-        const openAIIndex = toolCall.index ?? 0
-        let state = contentBlocks.get(openAIIndex + 10_000)
-        if (!state) {
-          const anthropicIndex = nextIndex++
-          state = {
+    if (event.type === 'response.function_call_arguments.delta') {
+      const key = `tool:${event.item_id || event.output_index || 0}`
+      const state = ensureToolBlock(key, event.item)
+      if (!startedToolBlocks.has(key)) {
+        yield {
+          type: 'content_block_start',
+          index: state.index,
+          content_block: {
             type: 'tool_use',
-            index: anthropicIndex,
-            id: toolCall.id || randomUUID(),
-            name: toolCall.function?.name || 'tool',
-          }
-          contentBlocks.set(openAIIndex + 10_000, state)
+            id: state.id,
+            name: state.name,
+            input: '',
+          },
+        }
+        startedToolBlocks.add(key)
+      }
+      if (event.delta) {
+        yield {
+          type: 'content_block_delta',
+          index: state.index,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: event.delta,
+          },
+        }
+      }
+      finishReason = 'tool_use'
+      continue
+    }
+
+    if (
+      (event.type === 'response.output_item.added' ||
+        event.type === 'response.output_item.done') &&
+      event.item?.type === 'function_call'
+    ) {
+      const key = `tool:${event.item_id || event.item.id || event.output_index || 0}`
+      const state = ensureToolBlock(key, event.item)
+      if (!startedToolBlocks.has(key)) {
+        yield {
+          type: 'content_block_start',
+          index: state.index,
+          content_block: {
+            type: 'tool_use',
+            id: state.id,
+            name: state.name,
+            input: '',
+          },
+        }
+        startedToolBlocks.add(key)
+      }
+      if (event.item.arguments) {
+        yield {
+          type: 'content_block_delta',
+          index: state.index,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: event.item.arguments,
+          },
+        }
+      }
+      finishReason = 'tool_use'
+    }
+  }
+
+  if (!started) {
+    const startEvent = ensureStarted(completedResponse)
+    if (startEvent) {
+      yield startEvent
+    }
+  }
+
+  if (completedResponse) {
+    usage = completedResponse.usage || usage
+    finishReason = getResponseStopReason(completedResponse)
+
+    for (const [outputIndex, item] of (completedResponse.output || []).entries()) {
+      if (item.type === 'function_call') {
+        const key = `tool:${item.id || item.call_id || outputIndex}`
+        const state = ensureToolBlock(key, item)
+        if (!startedToolBlocks.has(key)) {
           yield {
             type: 'content_block_start',
-            index: anthropicIndex,
+            index: state.index,
             content_block: {
               type: 'tool_use',
               id: state.id,
@@ -576,15 +723,44 @@ async function* streamAsAnthropicEvents({
               input: '',
             },
           }
+          startedToolBlocks.add(key)
+          if (item.arguments) {
+            yield {
+              type: 'content_block_delta',
+              index: state.index,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: item.arguments,
+              },
+            }
+          }
         }
+        continue
+      }
 
-        if (toolCall.function?.arguments) {
+      const textParts = extractResponseTextParts(item)
+      for (const [contentIndex, text] of textParts.entries()) {
+        if (!text) {
+          continue
+        }
+        const key = `text:${item.id || outputIndex}:${contentIndex}`
+        const index = ensureTextBlock(key)
+        if (!startedTextBlocks.has(key)) {
+          yield {
+            type: 'content_block_start',
+            index,
+            content_block: {
+              type: 'text',
+              text: '',
+            },
+          }
+          startedTextBlocks.add(key)
           yield {
             type: 'content_block_delta',
-            index: state.index,
+            index,
             delta: {
-              type: 'input_json_delta',
-              partial_json: toolCall.function.arguments,
+              type: 'text_delta',
+              text,
             },
           }
         }
@@ -592,34 +768,26 @@ async function* streamAsAnthropicEvents({
     }
   }
 
-  if (!started) {
-    const startEvent = ensureStarted()
-    if (startEvent) {
-      yield startEvent
-    }
-  }
+  const contentStops = [
+    ...[...textBlocks.entries()]
+      .filter(([key]) => startedTextBlocks.has(key))
+      .map(([, index]) => index),
+    ...[...toolBlocks.entries()]
+      .filter(([key]) => startedToolBlocks.has(key))
+      .map(([, block]) => block.index),
+  ].sort((a, b) => a - b)
 
-  if (textIndex !== undefined) {
+  for (const index of contentStops) {
     yield {
       type: 'content_block_stop',
-      index: textIndex,
-    }
-  }
-
-  const toolStates = [...contentBlocks.values()]
-    .filter(block => block.type === 'tool_use')
-    .sort((a, b) => a.index - b.index)
-  for (const block of toolStates) {
-    yield {
-      type: 'content_block_stop',
-      index: block.index,
+      index,
     }
   }
 
   yield {
     type: 'message_delta',
     delta: {
-      stop_reason: mapFinishReason(finishReason),
+      stop_reason: finishReason,
     },
     usage: mapUsage(usage),
   }
@@ -670,49 +838,62 @@ async function* parseSSE<T>(response: Response): AsyncGenerator<T> {
   }
 }
 
-function toAnthropicMessage(
-  completion: OpenAIChatCompletion,
-  fallbackModel: string,
-) {
-  const choice = completion.choices?.[0]
-  const textContent = choice?.message?.content ?? ''
-  const toolCalls = choice?.message?.tool_calls ?? []
+function toAnthropicMessage(response: OpenAIResponse, fallbackModel: string) {
+  const content = [] as Array<Record<string, unknown>>
+
+  for (const item of response.output || []) {
+    if (item.type === 'function_call') {
+      content.push({
+        type: 'tool_use',
+        id: item.call_id || item.id || randomUUID(),
+        name: item.name || 'tool',
+        input: normalizeToolInput(item.arguments || '{}'),
+      })
+      continue
+    }
+
+    const text = extractResponseTextParts(item).join('\n').trim()
+    if (text) {
+      content.push({
+        type: 'text',
+        text,
+      })
+    }
+  }
 
   return {
-    id: completion.id || randomUUID(),
+    id: response.id || randomUUID(),
     type: 'message',
     role: 'assistant',
-    model: completion.model || fallbackModel,
-    stop_reason: mapFinishReason(choice?.finish_reason),
+    model: response.model || fallbackModel,
+    stop_reason: getResponseStopReason(response),
     stop_sequence: null,
-    usage: mapUsage(completion.usage),
-    content: [
-      ...(textContent
-        ? [
-            {
-              type: 'text',
-              text: textContent,
-            },
-          ]
-        : []),
-      ...toolCalls.map(toolCall => ({
-        type: 'tool_use',
-        id: toolCall.id || randomUUID(),
-        name: toolCall.function?.name || 'tool',
-        input: normalizeToolInput(toolCall.function?.arguments || '{}'),
-      })),
-    ],
+    usage: mapUsage(response.usage),
+    content,
     container: null,
     context_management: null,
   }
 }
 
+function extractResponseTextParts(item: OpenAIResponseOutputItem): string[] {
+  if (!item.content) {
+    return []
+  }
+  return item.content
+    .map(part => (isTextResponsePart(part) ? part.text || '' : ''))
+    .filter(Boolean)
+}
+
+function isTextResponsePart(part: OpenAIResponseOutputText | undefined): boolean {
+  return !!part && ['output_text', 'input_text', 'text'].includes(part.type || '')
+}
+
 function mapUsage(usage: OpenAIUsage | undefined) {
   return {
-    input_tokens: usage?.prompt_tokens ?? 0,
+    input_tokens: usage?.input_tokens ?? usage?.prompt_tokens ?? 0,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
-    output_tokens: usage?.completion_tokens ?? 0,
+    output_tokens: usage?.output_tokens ?? usage?.completion_tokens ?? 0,
     server_tool_use: {
       web_search_requests: 0,
       web_fetch_requests: 0,
@@ -728,17 +909,20 @@ function mapUsage(usage: OpenAIUsage | undefined) {
   }
 }
 
-function mapFinishReason(reason: string | null | undefined) {
-  switch (reason) {
-    case 'tool_calls':
-      return 'tool_use'
-    case 'length':
-      return 'max_tokens'
-    case 'stop':
-    case 'content_filter':
-    default:
-      return 'end_turn'
+function getResponseStopReason(
+  response: OpenAIResponse | undefined,
+): 'tool_use' | 'max_tokens' | 'end_turn' {
+  if (!response) {
+    return 'end_turn'
   }
+  if ((response.output || []).some(item => item.type === 'function_call')) {
+    return 'tool_use'
+  }
+  const reason = response.incomplete_details?.reason || ''
+  if (reason.includes('max') || reason.includes('length')) {
+    return 'max_tokens'
+  }
+  return 'end_turn'
 }
 
 function extractTextFromBlock(block: unknown): string {

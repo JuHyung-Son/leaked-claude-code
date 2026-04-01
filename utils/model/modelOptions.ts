@@ -299,14 +299,14 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
     return [
       getDefaultOptionForUser(fastMode),
       {
-        value: 'gpt-4.1',
-        label: 'GPT-4.1',
+        value: 'gpt-5.4',
+        label: 'GPT-5.4',
         description: 'Best general-purpose OpenAI model for coding tasks',
       },
       {
-        value: 'gpt-4.1-mini',
-        label: 'GPT-4.1 mini',
-        description: 'Faster and cheaper OpenAI model for quick iterations',
+        value: 'gpt-5-mini',
+        label: 'GPT-5 mini',
+        description: 'Faster OpenAI model for quick iterations',
       },
       {
         value: 'gpt-4o',

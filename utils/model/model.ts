@@ -33,12 +33,14 @@ export type ModelShortName = string
 export type ModelName = string
 export type ModelSetting = ModelName | ModelAlias | null
 
-const DEFAULT_OPENAI_MAIN_MODEL = 'gpt-4.1'
-const DEFAULT_OPENAI_FAST_MODEL = 'gpt-4.1-mini'
+const DEFAULT_OPENAI_MAIN_MODEL = 'gpt-5.4'
+const DEFAULT_OPENAI_FAST_MODEL = 'gpt-5-mini'
 
 function formatOpenAIModelName(model: string): string {
   if (model.startsWith('gpt-')) {
-    return model.toUpperCase().replace(/^GPT-/, 'GPT-')
+    return model
+      .replace(/^gpt-/i, 'GPT-')
+      .replace(/-mini$/i, ' mini')
   }
   return model
 }
