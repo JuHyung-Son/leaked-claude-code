@@ -23,7 +23,7 @@ import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
-import { getAPIProvider } from './providers.js'
+import { getAPIProvider, isOpenAIProvider } from './providers.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
@@ -33,7 +33,22 @@ export type ModelShortName = string
 export type ModelName = string
 export type ModelSetting = ModelName | ModelAlias | null
 
+const DEFAULT_OPENAI_MAIN_MODEL = 'gpt-5.4'
+const DEFAULT_OPENAI_FAST_MODEL = 'gpt-5-mini'
+
+function formatOpenAIModelName(model: string): string {
+  if (model.startsWith('gpt-')) {
+    return model
+      .replace(/^gpt-/i, 'GPT-')
+      .replace(/-mini$/i, ' mini')
+  }
+  return model
+}
+
 export function getSmallFastModel(): ModelName {
+  if (isOpenAIProvider()) {
+    return process.env.OPENAI_SMALL_FAST_MODEL || DEFAULT_OPENAI_FAST_MODEL
+  }
   return process.env.ANTHROPIC_SMALL_FAST_MODEL || getDefaultHaikuModel()
 }
 
@@ -66,7 +81,11 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
     specifiedModel = modelOverride
   } else {
     const settings = getSettings_DEPRECATED() || {}
-    specifiedModel = process.env.ANTHROPIC_MODEL || settings.model || undefined
+    specifiedModel =
+      (isOpenAIProvider() ? process.env.OPENAI_MODEL : undefined) ||
+      process.env.ANTHROPIC_MODEL ||
+      settings.model ||
+      undefined
   }
 
   // Ignore the user-specified model if it's not in the availableModels allowlist.
@@ -98,11 +117,17 @@ export function getMainLoopModel(): ModelName {
 }
 
 export function getBestModel(): ModelName {
+  if (isOpenAIProvider()) {
+    return process.env.OPENAI_MODEL || DEFAULT_OPENAI_MAIN_MODEL
+  }
   return getDefaultOpusModel()
 }
 
 // @[MODEL LAUNCH]: Update the default Opus model (3P providers may lag so keep defaults unchanged).
 export function getDefaultOpusModel(): ModelName {
+  if (isOpenAIProvider()) {
+    return process.env.OPENAI_DEFAULT_OPUS_MODEL || DEFAULT_OPENAI_MAIN_MODEL
+  }
   if (process.env.ANTHROPIC_DEFAULT_OPUS_MODEL) {
     return process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
   }
@@ -117,6 +142,9 @@ export function getDefaultOpusModel(): ModelName {
 
 // @[MODEL LAUNCH]: Update the default Sonnet model (3P providers may lag so keep defaults unchanged).
 export function getDefaultSonnetModel(): ModelName {
+  if (isOpenAIProvider()) {
+    return process.env.OPENAI_DEFAULT_MAIN_MODEL || DEFAULT_OPENAI_MAIN_MODEL
+  }
   if (process.env.ANTHROPIC_DEFAULT_SONNET_MODEL) {
     return process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
   }
@@ -129,6 +157,9 @@ export function getDefaultSonnetModel(): ModelName {
 
 // @[MODEL LAUNCH]: Update the default Haiku model (3P providers may lag so keep defaults unchanged).
 export function getDefaultHaikuModel(): ModelName {
+  if (isOpenAIProvider()) {
+    return process.env.OPENAI_DEFAULT_HAIKU_MODEL || DEFAULT_OPENAI_FAST_MODEL
+  }
   if (process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL) {
     return process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
   }
@@ -176,6 +207,9 @@ export function getRuntimeMainLoopModel(params: {
  * @returns The default model setting to use
  */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
+  if (isOpenAIProvider()) {
+    return getDefaultSonnetModel()
+  }
   // Ants default to defaultModel from flag config, or Opus 1M if not configured
   if (process.env.USER_TYPE === 'ant') {
     return (
@@ -347,6 +381,9 @@ export function renderModelSetting(setting: ModelName | ModelAlias): string {
  * if the model is not recognized as a public model.
  */
 export function getPublicModelDisplayName(model: ModelName): string | null {
+  if (isOpenAIProvider() || model.toLowerCase().startsWith('gpt-')) {
+    return formatOpenAIModelName(normalizeModelStringForAPI(model))
+  }
   switch (model) {
     case getModelStrings().opus46:
       return 'Opus 4.6'
@@ -425,7 +462,13 @@ export function renderModelName(model: ModelName): string {
 export function getPublicModelName(model: ModelName): string {
   const publicName = getPublicModelDisplayName(model)
   if (publicName) {
+    if (isOpenAIProvider() || model.toLowerCase().startsWith('gpt-')) {
+      return `OpenAI ${publicName}`
+    }
     return `Claude ${publicName}`
+  }
+  if (isOpenAIProvider() || model.toLowerCase().startsWith('gpt-')) {
+    return `OpenAI (${model})`
   }
   return `Claude (${model})`
 }
@@ -568,6 +611,9 @@ export function modelDisplayString(model: ModelSetting): string {
 
 // @[MODEL LAUNCH]: Add a marketing name mapping for the new model below.
 export function getMarketingNameForModel(modelId: string): string | undefined {
+  if (isOpenAIProvider() || modelId.toLowerCase().startsWith('gpt-')) {
+    return formatOpenAIModelName(normalizeModelStringForAPI(modelId))
+  }
   if (getAPIProvider() === 'foundry') {
     // deployment ID is user-defined in Foundry, so it may have no relation to the actual model
     return undefined

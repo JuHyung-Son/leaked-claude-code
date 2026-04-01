@@ -400,6 +400,7 @@ const SAFE_ENV_VARS = new Set([
 
   // API keys and authentication
   'ANTHROPIC_API_KEY', // API authentication
+  'OPENAI_API_KEY', // API authentication
 
   // Locale and character encoding
   'LANG', // default locale

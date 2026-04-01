@@ -244,7 +244,8 @@ export function buildAPIProviderProperties(): Property[] {
     const providerLabel = {
       bedrock: 'AWS Bedrock',
       vertex: 'Google Vertex AI',
-      foundry: 'Microsoft Foundry'
+      foundry: 'Microsoft Foundry',
+      openai: 'OpenAI'
     }[apiProvider];
     properties.push({
       label: 'API provider',
@@ -257,6 +258,14 @@ export function buildAPIProviderProperties(): Property[] {
       properties.push({
         label: 'Anthropic base URL',
         value: anthropicBaseUrl
+      });
+    }
+  } else if (apiProvider === 'openai') {
+    const openAIBaseUrl = process.env.OPENAI_BASE_URL;
+    if (openAIBaseUrl) {
+      properties.push({
+        label: 'OpenAI base URL',
+        value: openAIBaseUrl
       });
     }
   } else if (apiProvider === 'bedrock') {

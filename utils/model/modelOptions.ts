@@ -43,6 +43,14 @@ export type ModelOption = {
 }
 
 export function getDefaultOptionForUser(fastMode = false): ModelOption {
+  if (getAPIProvider() === 'openai') {
+    return {
+      value: null,
+      label: 'Default (recommended)',
+      description: `Use the default OpenAI model (currently ${renderDefaultModelSetting(getDefaultMainLoopModelSetting())})`,
+    }
+  }
+
   if (process.env.USER_TYPE === 'ant') {
     const currentModel = renderDefaultModelSetting(
       getDefaultMainLoopModelSetting(),
@@ -285,6 +293,27 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
       getSonnet46_1MOption(),
       getHaiku45Option(),
     ]
+  }
+
+  if (getAPIProvider() === 'openai') {
+    return [
+      getDefaultOptionForUser(fastMode),
+      {
+        value: 'gpt-5.4',
+        label: 'GPT-5.4',
+        description: 'Best general-purpose OpenAI model for coding tasks',
+      },
+      {
+        value: 'gpt-5-mini',
+        label: 'GPT-5 mini',
+        description: 'Faster OpenAI model for quick iterations',
+      },
+      {
+        value: 'gpt-4o',
+        label: 'GPT-4o',
+        description: 'Multimodal OpenAI model for broader compatibility',
+      },
+    ].filter(option => option.value === null || isModelAllowed(String(option.value)))
   }
 
   if (isClaudeAISubscriber()) {

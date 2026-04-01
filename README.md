@@ -57,6 +57,36 @@ Claude Code is Anthropic's AI-powered coding assistant that runs as:
 
 It allows developers to interact with Claude directly in their development environment — Claude can read files, write code, run shell commands, search codebases, and perform complex multi-step software engineering tasks autonomously.
 
+For runtime examples after you already have a built or installed CLI, see [POST_BUILD_USAGE.md](POST_BUILD_USAGE.md).
+
+## Can This Be Switched to OpenAI Models?
+
+**Short answer:** now **yes, experimentally**. The codebase is still largely Anthropic-shaped, but it can now be routed through OpenAI's Responses API by enabling the OpenAI provider flag.
+
+### How to enable it
+
+Set these environment variables before launching the app:
+
+```bash
+export CLAUDE_CODE_USE_OPENAI=1
+export OPENAI_API_KEY=your_api_key_here
+export OPENAI_MODEL=gpt-5.4 # optional, defaults to gpt-5.4
+```
+
+### What changed
+
+- **Provider selection now includes OpenAI**: `utils/model/providers.ts` recognizes `CLAUDE_CODE_USE_OPENAI=1`.
+- **Model defaults can resolve to OpenAI models**: `utils/model/model.ts`, `utils/model/configs.ts`, and `utils/model/modelOptions.ts` now expose OpenAI-backed defaults such as `gpt-5.4` and `gpt-5-mini`.
+- **The API client can adapt OpenAI responses into Anthropic-style events**: `services/api/client.ts` uses `services/api/openaiAdapter.ts` to translate OpenAI Responses API output into the event/message shape the rest of the app already expects.
+
+### Current limitations
+
+This is still a compatibility layer, so some Claude-specific behaviors remain imperfect:
+
+1. Claude Code branding still exists in product copy, even when the backend provider is OpenAI
+2. advanced Anthropic-only beta features do not have OpenAI parity
+3. the adapter currently targets the OpenAI Responses API compatibility path, not every OpenAI API surface
+
 ## Repository Stats
 
 - **~1,900 TypeScript files**

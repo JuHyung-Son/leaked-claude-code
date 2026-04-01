@@ -14,6 +14,7 @@ import { getUserAgent } from 'src/utils/http.js'
 import { getSmallFastModel } from 'src/utils/model/model.js'
 import {
   getAPIProvider,
+  isOpenAIProvider,
   isFirstPartyAnthropicBaseUrl,
 } from 'src/utils/model/providers.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
@@ -28,6 +29,7 @@ import {
   getVertexRegionForModel,
   isEnvTruthy,
 } from '../../utils/envUtils.js'
+import { createOpenAIAnthropicAdapter } from './openaiAdapter.js'
 
 /**
  * Environment variables for different client types:
@@ -115,6 +117,16 @@ export async function getAnthropicClient({
     ...(clientApp ? { 'x-client-app': clientApp } : {}),
   }
 
+  const resolvedFetch = buildFetch(fetchOverride, source)
+
+  if (isOpenAIProvider()) {
+    return createOpenAIAnthropicAdapter({
+      apiKey,
+      defaultHeaders,
+      fetch: resolvedFetch ?? globalThis.fetch,
+    }) as unknown as Anthropic
+  }
+
   // Log API client configuration for HFI debugging
   logForDebugging(
     `[API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: ${!!process.env.ANTHROPIC_CUSTOM_HEADERS}, has Authorization header: ${!!customHeaders['Authorization']}`,
@@ -135,8 +147,6 @@ export async function getAnthropicClient({
   if (!isClaudeAISubscriber()) {
     await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
   }
-
-  const resolvedFetch = buildFetch(fetchOverride, source)
 
   const ARGS = {
     defaultHeaders,
