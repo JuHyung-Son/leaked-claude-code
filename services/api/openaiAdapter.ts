@@ -574,7 +574,7 @@ async function* streamAsAnthropicEvents({
     }
     const state = {
       index: nextIndex++,
-      id: item?.call_id || item?.id || randomUUID(),
+      id: item?.call_id || item?.id || `openai-tool-${key}`,
       name: item?.name || 'tool',
       started: false,
       emittedArgs: '',
@@ -874,11 +874,14 @@ async function* parseSSE<T>(response: Response): AsyncGenerator<T> {
 function toAnthropicMessage(response: OpenAIResponse, fallbackModel: string) {
   const content = [] as Array<Record<string, unknown>>
 
-  for (const item of response.output || []) {
+  for (const [outputIndex, item] of (response.output || []).entries()) {
     if (item.type === 'function_call') {
       content.push({
         type: 'tool_use',
-        id: item.call_id || item.id || randomUUID(),
+        id:
+          item.call_id ||
+          item.id ||
+          `openai-tool-${String(outputIndex)}`,
         name: item.name || 'tool',
         input: normalizeToolInput(item.arguments || '{}'),
       })
