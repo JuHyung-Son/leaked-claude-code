@@ -57,6 +57,8 @@ Claude Code is Anthropic's AI-powered coding assistant that runs as:
 
 It allows developers to interact with Claude directly in their development environment — Claude can read files, write code, run shell commands, search codebases, and perform complex multi-step software engineering tasks autonomously.
 
+For runtime examples after you already have a built or installed CLI, see [POST_BUILD_USAGE.md](POST_BUILD_USAGE.md).
+
 ## Can This Be Switched to OpenAI Models?
 
 **Short answer:** now **yes, experimentally**. The codebase is still largely Anthropic-shaped, but it can now be routed through OpenAI's Responses API by enabling the OpenAI provider flag.
