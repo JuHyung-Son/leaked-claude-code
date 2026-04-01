@@ -73,6 +73,24 @@ type OpenAIResponseEvent = {
   content_index?: number
   delta?: string
   part?: OpenAIResponseOutputText
+  text?: string
+  arguments?: string
+}
+
+type StreamFinishReason = 'tool_use' | 'max_tokens' | 'end_turn'
+
+type TextBlockState = {
+  index: number
+  started: boolean
+  emittedText: string
+}
+
+type ToolBlockState = {
+  index: number
+  id: string
+  name: string
+  started: boolean
+  emittedArgs: string
 }
 
 type OpenAIResponseWithData<T> = {
@@ -500,14 +518,12 @@ async function* streamAsAnthropicEvents({
   model: string
 }): AsyncGenerator<unknown> {
   const messageId = randomUUID()
-  const textBlocks = new Map<string, number>()
-  const toolBlocks = new Map<string, { index: number; id: string; name: string }>()
-  const startedTextBlocks = new Set<string>()
-  const startedToolBlocks = new Set<string>()
+  const textBlocks = new Map<string, TextBlockState>()
+  const toolBlocks = new Map<string, ToolBlockState>()
   let nextIndex = 0
   let usage: OpenAIUsage | undefined
   let resolvedModel = model
-  let finishReason: 'tool_use' | 'max_tokens' | 'end_turn' = 'end_turn'
+  let finishReason: StreamFinishReason = 'end_turn'
   let completedResponse: OpenAIResponse | undefined
   let started = false
 
@@ -538,12 +554,16 @@ async function* streamAsAnthropicEvents({
 
   const ensureTextBlock = (key: string) => {
     const existing = textBlocks.get(key)
-    if (existing !== undefined) {
+    if (existing) {
       return existing
     }
-    const index = nextIndex++
-    textBlocks.set(key, index)
-    return index
+    const state = {
+      index: nextIndex++,
+      started: false,
+      emittedText: '',
+    }
+    textBlocks.set(key, state)
+    return state
   }
 
   const ensureToolBlock = (key: string, item?: OpenAIResponseOutputItem) => {
@@ -555,9 +575,81 @@ async function* streamAsAnthropicEvents({
       index: nextIndex++,
       id: item?.call_id || item?.id || randomUUID(),
       name: item?.name || 'tool',
+      started: false,
+      emittedArgs: '',
     }
     toolBlocks.set(key, state)
     return state
+  }
+
+  const startTextBlock = async function* (state: TextBlockState) {
+    if (state.started) {
+      return
+    }
+    state.started = true
+    yield {
+      type: 'content_block_start',
+      index: state.index,
+      content_block: {
+        type: 'text',
+        text: '',
+      },
+    }
+  }
+
+  const emitTextDelta = async function* (
+    state: TextBlockState,
+    text: string | undefined,
+  ) {
+    if (!text) {
+      return
+    }
+    yield* startTextBlock(state)
+    state.emittedText += text
+    yield {
+      type: 'content_block_delta',
+      index: state.index,
+      delta: {
+        type: 'text_delta',
+        text,
+      },
+    }
+  }
+
+  const startToolBlock = async function* (state: ToolBlockState) {
+    if (state.started) {
+      return
+    }
+    state.started = true
+    yield {
+      type: 'content_block_start',
+      index: state.index,
+      content_block: {
+        type: 'tool_use',
+        id: state.id,
+        name: state.name,
+        input: '',
+      },
+    }
+  }
+
+  const emitToolArgs = async function* (
+    state: ToolBlockState,
+    args: string | undefined,
+  ) {
+    if (!args) {
+      return
+    }
+    yield* startToolBlock(state)
+    state.emittedArgs += args
+    yield {
+      type: 'content_block_delta',
+      index: state.index,
+      delta: {
+        type: 'input_json_delta',
+        partial_json: args,
+      },
+    }
   }
 
   for await (const event of parseSSE<OpenAIResponseEvent>(response)) {
@@ -579,86 +671,39 @@ async function* streamAsAnthropicEvents({
 
     if (event.type === 'response.output_text.delta') {
       const key = `text:${event.item_id || event.output_index || 0}:${event.content_index || 0}`
-      const index = ensureTextBlock(key)
-      if (textBlocks.get(key) === index && event.delta !== undefined) {
-        if (event.delta.length > 0) {
-          if (event.delta && textBlocks.get(key) === index && !startedTextBlocks.has(key)) {
-            yield {
-              type: 'content_block_start',
-              index,
-              content_block: {
-                type: 'text',
-                text: '',
-              },
-            }
-            startedTextBlocks.add(key)
-          }
-          yield {
-            type: 'content_block_delta',
-            index,
-            delta: {
-              type: 'text_delta',
-              text: event.delta,
-            },
-          }
-        }
+      const state = ensureTextBlock(key)
+      if (event.delta !== undefined) {
+        yield* emitTextDelta(state, event.delta)
       }
       continue
     }
 
     if (event.type === 'response.content_part.added' && isTextResponsePart(event.part)) {
       const key = `text:${event.item_id || event.output_index || 0}:${event.content_index || 0}`
-      const index = ensureTextBlock(key)
-      if (!startedTextBlocks.has(key)) {
-        yield {
-          type: 'content_block_start',
-          index,
-          content_block: {
-            type: 'text',
-            text: '',
-          },
-        }
-        startedTextBlocks.add(key)
-      }
-      if (event.part?.text) {
-        yield {
-          type: 'content_block_delta',
-          index,
-          delta: {
-            type: 'text_delta',
-            text: event.part.text,
-          },
-        }
-      }
+      const state = ensureTextBlock(key)
+      yield* startTextBlock(state)
+      continue
+    }
+
+    if (event.type === 'response.output_text.done') {
+      const key = `text:${event.item_id || event.output_index || 0}:${event.content_index || 0}`
+      const state = ensureTextBlock(key)
+      yield* emitMissingSuffix(state, event.text)
       continue
     }
 
     if (event.type === 'response.function_call_arguments.delta') {
       const key = `tool:${event.item_id || event.output_index || 0}`
       const state = ensureToolBlock(key, event.item)
-      if (!startedToolBlocks.has(key)) {
-        yield {
-          type: 'content_block_start',
-          index: state.index,
-          content_block: {
-            type: 'tool_use',
-            id: state.id,
-            name: state.name,
-            input: '',
-          },
-        }
-        startedToolBlocks.add(key)
-      }
-      if (event.delta) {
-        yield {
-          type: 'content_block_delta',
-          index: state.index,
-          delta: {
-            type: 'input_json_delta',
-            partial_json: event.delta,
-          },
-        }
-      }
+      yield* emitToolArgs(state, event.delta)
+      finishReason = 'tool_use'
+      continue
+    }
+
+    if (event.type === 'response.function_call_arguments.done') {
+      const key = `tool:${event.item_id || event.output_index || 0}`
+      const state = ensureToolBlock(key, event.item)
+      yield* emitMissingArgs(state, event.arguments ?? event.item?.arguments)
       finishReason = 'tool_use'
       continue
     }
@@ -670,30 +715,12 @@ async function* streamAsAnthropicEvents({
     ) {
       const key = `tool:${event.item_id || event.item.id || event.output_index || 0}`
       const state = ensureToolBlock(key, event.item)
-      if (!startedToolBlocks.has(key)) {
-        yield {
-          type: 'content_block_start',
-          index: state.index,
-          content_block: {
-            type: 'tool_use',
-            id: state.id,
-            name: state.name,
-            input: '',
-          },
-        }
-        startedToolBlocks.add(key)
-      }
-      if (event.item.arguments) {
-        yield {
-          type: 'content_block_delta',
-          index: state.index,
-          delta: {
-            type: 'input_json_delta',
-            partial_json: event.item.arguments,
-          },
-        }
+      yield* startToolBlock(state)
+      if (event.type === 'response.output_item.done') {
+        yield* emitMissingArgs(state, event.item.arguments)
       }
       finishReason = 'tool_use'
+      continue
     }
   }
 
@@ -712,29 +739,7 @@ async function* streamAsAnthropicEvents({
       if (item.type === 'function_call') {
         const key = `tool:${item.id || item.call_id || outputIndex}`
         const state = ensureToolBlock(key, item)
-        if (!startedToolBlocks.has(key)) {
-          yield {
-            type: 'content_block_start',
-            index: state.index,
-            content_block: {
-              type: 'tool_use',
-              id: state.id,
-              name: state.name,
-              input: '',
-            },
-          }
-          startedToolBlocks.add(key)
-          if (item.arguments) {
-            yield {
-              type: 'content_block_delta',
-              index: state.index,
-              delta: {
-                type: 'input_json_delta',
-                partial_json: item.arguments,
-              },
-            }
-          }
-        }
+        yield* emitMissingArgs(state, item.arguments)
         continue
       }
 
@@ -744,37 +749,19 @@ async function* streamAsAnthropicEvents({
           continue
         }
         const key = `text:${item.id || outputIndex}:${contentIndex}`
-        const index = ensureTextBlock(key)
-        if (!startedTextBlocks.has(key)) {
-          yield {
-            type: 'content_block_start',
-            index,
-            content_block: {
-              type: 'text',
-              text: '',
-            },
-          }
-          startedTextBlocks.add(key)
-          yield {
-            type: 'content_block_delta',
-            index,
-            delta: {
-              type: 'text_delta',
-              text,
-            },
-          }
-        }
+        const state = ensureTextBlock(key)
+        yield* emitMissingSuffix(state, text)
       }
     }
   }
 
   const contentStops = [
-    ...[...textBlocks.entries()]
-      .filter(([key]) => startedTextBlocks.has(key))
-      .map(([, index]) => index),
-    ...[...toolBlocks.entries()]
-      .filter(([key]) => startedToolBlocks.has(key))
-      .map(([, block]) => block.index),
+    ...[...textBlocks.values()]
+      .filter(block => block.started)
+      .map(block => block.index),
+    ...[...toolBlocks.values()]
+      .filter(block => block.started)
+      .map(block => block.index),
   ].sort((a, b) => a - b)
 
   for (const index of contentStops) {
@@ -911,7 +898,7 @@ function mapUsage(usage: OpenAIUsage | undefined) {
 
 function getResponseStopReason(
   response: OpenAIResponse | undefined,
-): 'tool_use' | 'max_tokens' | 'end_turn' {
+): StreamFinishReason {
   if (!response) {
     return 'end_turn'
   }
@@ -923,6 +910,97 @@ function getResponseStopReason(
     return 'max_tokens'
   }
   return 'end_turn'
+}
+
+async function* emitMissingSuffix(
+  state: TextBlockState,
+  fullText: string | undefined,
+): AsyncGenerator<unknown> {
+  if (!fullText) {
+    return
+  }
+  const suffix = fullText.startsWith(state.emittedText)
+    ? fullText.slice(state.emittedText.length)
+    : state.started
+      ? ''
+      : fullText
+  if (!suffix) {
+    yield* startTextBlockFromState(state)
+    return
+  }
+  yield* startTextBlockFromState(state)
+  state.emittedText += suffix
+  yield {
+    type: 'content_block_delta',
+    index: state.index,
+    delta: {
+      type: 'text_delta',
+      text: suffix,
+    },
+  }
+}
+
+async function* emitMissingArgs(
+  state: ToolBlockState,
+  fullArgs: string | undefined,
+): AsyncGenerator<unknown> {
+  yield* startToolBlockFromState(state)
+  if (!fullArgs) {
+    return
+  }
+  const suffix = fullArgs.startsWith(state.emittedArgs)
+    ? fullArgs.slice(state.emittedArgs.length)
+    : state.started
+      ? ''
+      : fullArgs
+  if (!suffix) {
+    return
+  }
+  state.emittedArgs += suffix
+  yield {
+    type: 'content_block_delta',
+    index: state.index,
+    delta: {
+      type: 'input_json_delta',
+      partial_json: suffix,
+    },
+  }
+}
+
+async function* startTextBlockFromState(
+  state: TextBlockState,
+): AsyncGenerator<unknown> {
+  if (state.started) {
+    return
+  }
+  state.started = true
+  yield {
+    type: 'content_block_start',
+    index: state.index,
+    content_block: {
+      type: 'text',
+      text: '',
+    },
+  }
+}
+
+async function* startToolBlockFromState(
+  state: ToolBlockState,
+): AsyncGenerator<unknown> {
+  if (state.started) {
+    return
+  }
+  state.started = true
+  yield {
+    type: 'content_block_start',
+    index: state.index,
+    content_block: {
+      type: 'tool_use',
+      id: state.id,
+      name: state.name,
+      input: '',
+    },
+  }
 }
 
 function extractTextFromBlock(block: unknown): string {
