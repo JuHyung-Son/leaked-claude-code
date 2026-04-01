@@ -699,7 +699,7 @@ function toAnthropicMessage(
         type: 'tool_use',
         id: toolCall.id || randomUUID(),
         name: toolCall.function?.name || 'tool',
-        input: toolCall.function?.arguments || '{}',
+        input: normalizeToolInput(toolCall.function?.arguments || '{}'),
       })),
     ],
     container: null,
